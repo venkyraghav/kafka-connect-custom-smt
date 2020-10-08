@@ -1,0 +1,45 @@
+// Directives
+:toc:
+:sectnums:
+
+:hardbreaks:
+
+= kafka-connect-custom-smt
+Venky Narayanan <venkyyraghav@gmail.com>
+
+== Overview
+Refer https://docs.confluent.io/current/connect/transforms/index.html for Kafka Connect SMT.
+This project attempts provides additional SMTs that are not readily available for use.
+
+== Deployment
+
+. Build
+Download the project code and perform a maven build
++
+----
+mvn clean package
+----
++
+. Copy the resulting jar file to kafka connect `plugin.path` directory
+. Restart connect.
+Transformation classes defined in this project will be picked by the connect worker after restart.
+
+== Usage
+
+=== ConvertCase
+. Operates only on KEY and VALUE of kafka record.
+. Use `convert.from.to` to convert the case of the incoming field name.
+Supports following conversions.
++
+|===
+|**Incoming**|**Outgoing**|value|Comments
+|snake_case|camelCase|snakeunderscore2camel|From snake case with underscore (_)
+|snake-case|camelCase|snakehyphen2came|From snake case with hyphen (-)
+|camelCase|snake_case|camel2snakeunderscore|To snake case with underscore (_)
+|camelCase|snake-case|camel2snakehyphen|To snake case with hyphen (-)
+|===
+. Use `whitelist` to whitelist fields (comma-separated) for conversion.
+This limits conversion of those fields only. Rest of the fields (except structs) are ignored.
+. Use `blacklist` to blacklist fields (comma-separated) for conversion.
+This filters out fields for conversion. Rest of the fields (except structs) are considered for conversion.
+. Use `noop` to ignore conversion of those fields.
