@@ -23,6 +23,7 @@ import org.apache.kafka.common.cache.SynchronizedCache;
 import org.apache.kafka.common.config.ConfigDef;
 import org.apache.kafka.common.config.ConfigException;
 import org.apache.kafka.connect.connector.ConnectRecord;
+import org.apache.kafka.connect.data.Field;
 import org.apache.kafka.connect.data.Schema;
 import org.apache.kafka.connect.data.SchemaBuilder;
 import org.apache.kafka.connect.data.Struct;
@@ -32,9 +33,7 @@ import org.apache.kafka.connect.transforms.util.SimpleConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.Map;
+import java.util.*;
 
 import static org.apache.kafka.connect.transforms.util.Requirements.requireMap;
 import static org.apache.kafka.connect.transforms.util.Requirements.requireStruct;
@@ -224,16 +223,43 @@ public abstract class ConvertCase<R extends ConnectRecord<R>> implements Transfo
         final Map<String, Object> updatedValue = new HashMap<>();
 
         originalValue.forEach( (k, v) -> {
-            boolean structField = (v instanceof Map) ? true : false;
+            boolean structField = (v instanceof Map || v instanceof List) ? true : false;
 
             String fieldName2Use = convertField(k, structField);
             if (structField == true) {
-                final Map v1 = applySchemaless((Map)v);
-                updatedValue.put(fieldName2Use, v1);
+                if (v instanceof Map) {
+                    final Map v1 = applySchemaless((Map) v);
+                    updatedValue.put(fieldName2Use, v1);
+                } else {
+                    final List v1 = applySchemaless((List) v);
+                    updatedValue.put(fieldName2Use, v1);
+                }
             } else {
                 if (fieldName2Use != null) {
                     updatedValue.put(fieldName2Use, v);
                 }
+            }
+        });
+        return updatedValue;
+    }
+
+    private List applySchemaless(List<Object> originalValue) {
+        final List updatedValue = new ArrayList<>();
+
+        originalValue.forEach( v -> {
+            boolean structField = (v instanceof Map || v instanceof List) ? true : false;
+
+            // String fieldName2Use = convertField(k, structField);
+            if (structField == true) {
+                if (v instanceof Map) {
+                    final Map v1 = applySchemaless((Map) v);
+                    updatedValue.add(v1);
+                } else {
+                    final List v1 = applySchemaless((List) v);
+                    updatedValue.add(v1);
+                }
+            } else {
+                updatedValue.add(v);
             }
         });
         return updatedValue;
@@ -265,10 +291,18 @@ public abstract class ConvertCase<R extends ConnectRecord<R>> implements Transfo
             String fieldName = field.name();
             String originalFieldName = reverseConverted(fieldName);
 
-            boolean structField = field.schema().type() == Schema.Type.STRUCT ? true : false;
-            if (structField == true) {
+            boolean structField = (field.schema().type() == Schema.Type.STRUCT || field.schema().type() == Schema.Type.ARRAY) ? true : false;
+            if (field.schema().type() == Schema.Type.STRUCT) {
                 final Struct v1 = applyWithSchema(field.schema(), originalValue.getStruct(originalFieldName));
                 value.put(field.name(), v1);
+            } else if (field.schema().type() == Schema.Type.ARRAY) {
+                List originalList = originalValue.getArray(originalFieldName);
+                List valueList = new ArrayList();
+                originalList.forEach(originalElement -> {
+                    final Struct v1Value = applyWithSchema(field.schema().valueSchema(), (Struct)originalElement);
+                    valueList.add(v1Value);
+                });
+                value.put(field.name(), valueList);
             } else {
                 final Object fieldValue = originalValue.get(originalFieldName);
                 value.put(field.name(), fieldValue);
@@ -281,14 +315,25 @@ public abstract class ConvertCase<R extends ConnectRecord<R>> implements Transfo
         Create a new schema applying the conversion rules
      */
     private Schema makeUpdatedSchema(Schema schema) {
-        final SchemaBuilder builder = SchemaUtil.copySchemaBasics(schema, SchemaBuilder.struct());
+        List<Field> fields;
 
-        schema.fields().forEach( field -> {
+        final SchemaBuilder builder = SchemaUtil.copySchemaBasics(schema, SchemaBuilder.struct());
+        if (schema.type() == Schema.Type.ARRAY) {
+            fields = schema.valueSchema().fields();
+        } else {
+            fields = schema.fields();
+        }
+
+        fields.forEach( field -> {
             final String fieldName = field.name();
-            boolean structField = field.schema().type() == Schema.Type.STRUCT ? true : false;
+            boolean structField = (field.schema().type() == Schema.Type.STRUCT || field.schema().type() == Schema.Type.ARRAY) ? true : false;
 
             String fieldName2Use = convertField(fieldName, structField);
-            if (structField) {  // Recurse on struct field
+            if (field.schema().type() == Schema.Type.STRUCT) {  // Recurse on struct field
+                Schema innerSchema = makeUpdatedSchema(field.schema());
+                builder.field(fieldName2Use, innerSchema);
+                reverseRenames.put(fieldName2Use, fieldName);
+            } else if (field.schema().type() == Schema.Type.ARRAY) {
                 Schema innerSchema = makeUpdatedSchema(field.schema());
                 builder.field(fieldName2Use, innerSchema);
                 reverseRenames.put(fieldName2Use, fieldName);
@@ -299,9 +344,14 @@ public abstract class ConvertCase<R extends ConnectRecord<R>> implements Transfo
                 }
             }
         });
-        return builder.build();
-    }
 
+        SchemaBuilder builder1 = builder;
+        if (schema.type() == Schema.Type.ARRAY) {
+            Schema schema1 = builder1.build();
+            builder1 = SchemaUtil.copySchemaBasics(schema, SchemaBuilder.array(schema1));
+        }
+        return builder1.build();
+    }
     @Override
     public ConfigDef config() {
         return CONFIG_DEF;
