@@ -38,6 +38,20 @@ public class ConvertCaseTest {
         xformKey.close();
     }
 
+    @Test (expected = IllegalArgumentException.class)
+    public void caseTypeCheck() {
+        final Map<String, String> props = new HashMap<>();
+        props.put("convert.from.to", "uppercase2");
+
+        xformValue.configure(props);
+
+        final SinkRecord record = new SinkRecord("test", 0, null, null, null, null, 0);
+        final SinkRecord transformedRecord = xformValue.apply(record);
+
+        assertNull(transformedRecord.value());
+        assertNull(transformedRecord.valueSchema());
+    }
+
     @Test
     public void tombstoneSchemaless() {
         final Map<String, String> props = new HashMap<>();
@@ -228,9 +242,9 @@ public class ConvertCaseTest {
 
         final Map<String, Object> value = new HashMap<>();
         value.put("first_name", "whatever");
-        value.put("address_number", new Integer(123));
+        value.put("address_number", Integer.valueOf(123));
         value.put("living", Boolean.TRUE);
-        value.put("salary", new Float(100.32));
+        value.put("salary", Float.valueOf(100.32f));
 
         final Map<String, Object> inner = new HashMap<>();
         value.put("inner_map", inner);
@@ -257,6 +271,75 @@ public class ConvertCaseTest {
         HashMap updatedValueInnerMost = (HashMap) updatedValueInner.get("innerMost");
         assertNotNull(updatedValueInnerMost);
         assertEquals("TestMediaType", updatedValueInnerMost.get("mediaType"));
+    }
+
+    @Test
+    public void schemalessRepeatedNestedSnakeUnderscore2Camel() {
+        final Map<String, String> props = new HashMap<>();
+        props.put("convert.from.to", "snakeunderscore2camel");
+
+        xformValue.configure(props);
+
+        final Map<String, Object> value = new HashMap<>();
+        value.put("first_name", "whatever");
+        value.put("address_number", Integer.valueOf(123));
+        value.put("living", Boolean.TRUE);
+        value.put("salary", Float.valueOf(100.32f));
+
+        final Map<String, Object> inner = new HashMap<>();
+        value.put("inner_map", inner);
+        inner.put("display_name", "Test Display");
+
+        final Map<String, Object> innerMost = new HashMap<>();
+        inner.put("inner_most", innerMost);
+        innerMost.put("media_type", "TestMediaType");
+
+        List repeated = new ArrayList<Map>();
+        inner.put("repeated_element", repeated);
+        Map<String, Object> repeatedInner = new HashMap<>();
+        repeated.add(repeatedInner);
+        repeatedInner.put("repeated_one", "repeatedInner1");
+        repeatedInner.put("repeated_two", "repeatedInner2");
+        repeatedInner = new HashMap<>();
+        repeated.add(repeatedInner);
+        repeatedInner.put("repeated_one", "repeatedInner3");
+        repeatedInner.put("repeated_two", "repeatedInner4");
+
+        value.put("first_name", "whatever");
+
+        final SinkRecord record = new SinkRecord("test", 0, null, null, null, value, 0);
+        final SinkRecord transformedRecord = xformValue.apply(record);
+
+        final Map updatedValue = (Map) transformedRecord.value();
+        assertEquals(5, updatedValue.size());
+        assertEquals("whatever", updatedValue.get("firstName"));
+        assertEquals(Integer.valueOf(123), updatedValue.get("addressNumber"));
+        assertEquals(Boolean.TRUE, updatedValue.get("living"));
+        assertEquals(Float.valueOf(100.32f), updatedValue.get("salary"));
+
+        HashMap updatedValueInner = (HashMap) updatedValue.get("innerMap");
+        assertNotNull(updatedValueInner);
+        assertEquals("Test Display", updatedValueInner.get("displayName"));
+
+        HashMap updatedValueInnerMost = (HashMap) updatedValueInner.get("innerMost");
+        assertNotNull(updatedValueInnerMost);
+        assertEquals("TestMediaType", updatedValueInnerMost.get("mediaType"));
+
+        repeated = (List) updatedValueInner.get("repeatedElement");
+        assertNotNull(repeated);
+        assertEquals(2, repeated.size());
+
+        repeated.forEach( e -> {
+            final Map r = (Map)e;
+            assertEquals(2, r.size());
+            if (r.get("repeatedOne") != null && r.get("repeatedOne").equals("repeatedInner1")) {
+                assertEquals("repeatedInner2",r.get("repeatedTwo"));
+            } else if (r.get("repeatedOne") != null && r.get("repeatedOne").equals("repeatedInner3")) {
+                assertEquals("repeatedInner4", r.get("repeatedTwo"));
+            } else {
+                fail ("Element not found");
+            }
+        });
     }
 
     @Test
