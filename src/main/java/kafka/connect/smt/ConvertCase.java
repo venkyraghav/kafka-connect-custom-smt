@@ -30,7 +30,6 @@ import org.apache.kafka.connect.data.Struct;
 import org.apache.kafka.connect.transforms.Transformation;
 import org.apache.kafka.connect.transforms.util.SchemaUtil;
 import org.apache.kafka.connect.transforms.util.SimpleConfig;
-import org.checkerframework.framework.qual.Unused;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -108,8 +107,12 @@ public abstract class ConvertCase<R extends ConnectRecord<R>> implements Transfo
     private String whitelist;
     private String blacklist;
     private String noop;
-    private Cache<Schema, Schema> schemaUpdateCache;
+    private Cache<String, Schema> schemaUpdateCache;
     private Map<String, String> reverseRenames;
+
+    protected long schemaUpdateCacheSize() {
+        return schemaUpdateCache.size();
+    }
 
     @Override
     public void configure(Map<String, ?> map) {
@@ -139,8 +142,8 @@ public abstract class ConvertCase<R extends ConnectRecord<R>> implements Transfo
         Converts field name. If structure field noop, blacklist rule cannot be applied
      */
     private String convertField(String fieldName, boolean override) {
-        if (override == false) { // if structure blacklist, noop, whitelist doesn't apply
-            if (isNoop(fieldName) == true) { // if noop send fieldname
+        if (!override) { // if structure blacklist, noop, whitelist doesn't apply
+            if (isNoop(fieldName)) { // if noop send fieldname
                 return fieldName;
             }
             if (isBlacklist(fieldName)) { // if blacklisted
@@ -154,7 +157,7 @@ public abstract class ConvertCase<R extends ConnectRecord<R>> implements Transfo
     }
 
     private boolean isBlacklist(String fieldName) {
-        return (!blacklist.contains(fieldName) && (whitelist.isEmpty() || whitelist.contains(fieldName))) == false;
+        return !(!blacklist.contains(fieldName) && (whitelist.isEmpty() || whitelist.contains(fieldName)));
     }
 
     private boolean isNoop(String fieldName) {
@@ -224,10 +227,10 @@ public abstract class ConvertCase<R extends ConnectRecord<R>> implements Transfo
         final Map<String, Object> updatedValue = new HashMap<>();
 
         originalValue.forEach( (k, v) -> {
-            boolean structField = (v instanceof Map || v instanceof List) ? true : false;
+            boolean structField = v instanceof Map || v instanceof List;
 
             String fieldName2Use = convertField(k, structField);
-            if (structField == true) {
+            if (structField) {
                 if (v instanceof Map) {
                     final Map v1 = applySchemaless((Map) v);
                     updatedValue.put(fieldName2Use, v1);
@@ -254,10 +257,13 @@ public abstract class ConvertCase<R extends ConnectRecord<R>> implements Transfo
     private R applyWithSchema(R record) {
         final Struct value = requireStruct(operatingValue(record), PURPOSE);
 
-        Schema updatedSchema = schemaUpdateCache.get(value.schema());
+        final String hashCode = String.valueOf(value.schema().hashCode());
+        // System.out.println("Schema " + hashCode);
+
+        Schema updatedSchema = schemaUpdateCache.get(hashCode);
         if (updatedSchema == null) {
             updatedSchema = makeUpdatedSchema(value.schema());
-            schemaUpdateCache.put(value.schema(), updatedSchema);
+            schemaUpdateCache.put(hashCode, updatedSchema);
         }
 
         final Struct updatedValue = applyWithSchema(updatedSchema, value);
@@ -269,28 +275,44 @@ public abstract class ConvertCase<R extends ConnectRecord<R>> implements Transfo
      */
     private Struct applyWithSchema (Schema schema, Struct originalValue) {
         final Struct value = new Struct(schema);
+        final StringBuilder valuePresent = new StringBuilder("");
 
         schema.fields().forEach( field -> {
             String fieldName = field.name();
             String originalFieldName = reverseConverted(fieldName);
 
-            boolean structField = (field.schema().type() == Schema.Type.STRUCT || field.schema().type() == Schema.Type.ARRAY) ? true : false;
             if (field.schema().type() == Schema.Type.STRUCT) {
                 final Struct v1 = applyWithSchema(field.schema(), originalValue.getStruct(originalFieldName));
-                value.put(field.name(), v1);
+                if (v1 != null) {
+                    valuePresent.append("1");
+                    value.put(field.name(), v1);
+                }
             } else if (field.schema().type() == Schema.Type.ARRAY) {
                 List originalList = originalValue.getArray(originalFieldName);
                 List valueList = new ArrayList();
                 originalList.forEach(originalElement -> {
                     final Struct v1Value = applyWithSchema(field.schema().valueSchema(), (Struct)originalElement);
-                    valueList.add(v1Value);
+                    if (v1Value != null) {
+                        valuePresent.append("1");
+                        valueList.add(v1Value);
+                    }
                 });
                 value.put(field.name(), valueList);
+                valuePresent.append("1");
             } else {
-                final Object fieldValue = originalValue.get(originalFieldName);
-                value.put(field.name(), fieldValue);
+                if (originalValue != null) { // optional field and its children
+                    final Object fieldValue = originalValue.get(originalFieldName);
+                    if (fieldValue != null) {
+                        value.put(field.name(), fieldValue);
+                        valuePresent.append("1");
+                    }
+                }
             }
         });
+        if (valuePresent.length() < 1) {
+            return null;
+        }
+
         return value;
     }
 
@@ -309,12 +331,13 @@ public abstract class ConvertCase<R extends ConnectRecord<R>> implements Transfo
 
         fields.forEach( field -> {
             final String fieldName = field.name();
-            boolean structField = (field.schema().type() == Schema.Type.STRUCT || field.schema().type() == Schema.Type.ARRAY) ? true : false;
+            boolean structField = field.schema().type() == Schema.Type.STRUCT || field.schema().type() == Schema.Type.ARRAY;
 
             String fieldName2Use = convertField(fieldName, structField);
             if (field.schema().type() == Schema.Type.STRUCT || field.schema().type() == Schema.Type.ARRAY) {  // Recurse on struct field
+                assert fieldName2Use != null;
                 Schema innerSchema = makeUpdatedSchema(field.schema());
-                builder.field(fieldName2Use, innerSchema);
+                builder.field(fieldName2Use, innerSchema).optional();
                 reverseRenames.put(fieldName2Use, fieldName);
             } else {
                 if (fieldName2Use != null) {
@@ -326,10 +349,10 @@ public abstract class ConvertCase<R extends ConnectRecord<R>> implements Transfo
 
         SchemaBuilder builder1 = builder;
         if (schema.type() == Schema.Type.ARRAY) {
-            Schema schema1 = builder1.build();
+            Schema schema1 = builder1.optional().build();
             builder1 = SchemaUtil.copySchemaBasics(schema, SchemaBuilder.array(schema1));
         }
-        return builder1.build();
+        return builder1.optional().build();
     }
     @Override
     public ConfigDef config() {
